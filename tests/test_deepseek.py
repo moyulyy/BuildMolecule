@@ -10,10 +10,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from mk_mole.config import AppConfig
-from mk_mole.services.deepseek import DeepSeekError, generate_poscar
+from mk_mole.services.deepseek import DeepSeekError, generate_poscar, parse_structure_image
 from tests.test_poscar import BENZENE
 
 CONTENT = "结构如下：\n```poscar\n" + BENZENE + "```\n"
+VISION_CONTENT = (
+    '```json\n{"smiles":"c1ccccc1","formula":"C6H6","name":"苯",'
+    '"confidence":"high","notes":"平面芳香环"}\n```'
+)
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -41,14 +45,26 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
+        if "/vision/" in self.path:
+            for index in range(0, len(VISION_CONTENT), 48):
+                chunk = {"choices": [{"delta": {"content": VISION_CONTENT[index:index + 48]}}]}
+                line = "data: " + json.dumps(chunk, ensure_ascii=False) + "\n\n"
+                self.wfile.write(line.encode())
+                self.wfile.flush()
+                time.sleep(0.003)
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+            return
         for piece in ("苯环是平面正六边形。", "C-C 1.39 Å。"):
             chunk = {"choices": [{"delta": {"reasoning_content": piece}}]}
-            self.wfile.write(("data: " + json.dumps(chunk, ensure_ascii=False) + "\n\n").encode())
+            line = "data: " + json.dumps(chunk, ensure_ascii=False) + "\n\n"
+            self.wfile.write(line.encode())
             self.wfile.flush()
             time.sleep(0.005)
         for index in range(0, len(CONTENT), 64):
             chunk = {"choices": [{"delta": {"content": CONTENT[index:index + 64]}}]}
-            self.wfile.write(("data: " + json.dumps(chunk, ensure_ascii=False) + "\n\n").encode())
+            line = "data: " + json.dumps(chunk, ensure_ascii=False) + "\n\n"
+            self.wfile.write(line.encode())
             self.wfile.flush()
             time.sleep(0.005)
         self.wfile.write(b"data: [DONE]\n\n")
@@ -126,6 +142,37 @@ def test_image_is_sent_as_image_url(server) -> None:
     )
     text = next(part["text"] for part in user["content"] if part.get("type") == "text")
     assert "已提供结构图片" in text
+
+
+def test_image_only_prompt_allows_missing_formula(server) -> None:
+    image = "data:image/png;base64,AAAA"
+    result = generate_poscar(_config(server), {"formula": "", "image_b64": image})
+    assert result.poscar.startswith("benzene")
+    user = _Handler.last_body["messages"][-1]
+    assert isinstance(user["content"], list)
+    text = next(part["text"] for part in user["content"] if part.get("type") == "text")
+    assert "用户没有提供分子式" in text
+    assert "不要反问" in text
+    assert any(part.get("type") == "image_url" for part in user["content"])
+
+
+def test_parse_structure_image(server) -> None:
+    image = "data:image/png;base64,AAAA"
+    result = parse_structure_image(_config(server, "vision"), image)
+    assert result.smiles == "c1ccccc1"
+    assert result.formula == "C6H6"
+    assert result.name == "苯"
+    assert result.confidence == "high"
+    assert "芳香" in result.notes
+    body = _Handler.last_body
+    assert body["reasoning_effort"] == "none"
+    assert body["thinking"] == {"type": "disabled"}
+    user = body["messages"][-1]
+    assert isinstance(user["content"], list)
+    assert any(
+        part.get("type") == "image_url" and part["image_url"]["url"] == image
+        for part in user["content"]
+    )
 
 
 def test_prompt_priority_and_source(server) -> None:

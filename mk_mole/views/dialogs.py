@@ -138,6 +138,58 @@ class OverlayDialog(QDialog):
         return row
 
 
+class ImagePreviewDialog(OverlayDialog):
+    """结构图片放大预览：单张图片，按窗口尺寸自适应缩放。"""
+
+    def __init__(self, image: QImage, name: str, parent: QWidget):
+        parent_w = max(760, parent.width())
+        parent_h = max(560, parent.height())
+        card_w = min(1000, parent_w - 120)
+        super().__init__(parent, width=card_w)
+        self.body.addLayout(self.header("结构图片预览", name or "结构图片"))
+
+        canvas = QFrame()
+        canvas.setObjectName("PreviewCanvas")
+        canvas.setStyleSheet(
+            "QFrame#PreviewCanvas { background: white;"
+            " border: 1px solid rgba(60,60,67,16%); border-radius: 12px; }"
+        )
+        canvas_layout = QVBoxLayout(canvas)
+        canvas_layout.setContentsMargins(12, 12, 12, 12)
+        max_w = max(420, card_w - 82)
+        max_h = max(260, parent_h - 235)
+        pixmap = QPixmap.fromImage(image)
+        if not pixmap.isNull():
+            pixmap = pixmap.scaled(
+                max_w, max_h,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            preview = QLabel()
+            preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            preview.setPixmap(pixmap)
+            canvas_layout.addWidget(preview, 1)
+        else:
+            empty = make_label("图片无法预览", color=Color.tertiary)
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            canvas_layout.addWidget(empty, 1)
+        self.body.addWidget(canvas, 1)
+
+        meta = make_label(
+            f"{image.width()} × {image.height()} px · 点击遮罩或按 Esc 关闭",
+            color=Color.tertiary,
+        )
+        meta.setFont(app_font(10.5))
+        self.body.addWidget(meta)
+
+        footer = self.footer()
+        close = PillButton("关闭", variant="primary", icon_name="check",
+                           icon_color="#FFFFFF")
+        close.clicked.connect(self.accept)
+        footer.addWidget(close)
+        self.body.addLayout(footer)
+
+
 class SettingsSheet(OverlayDialog):
     saved = Signal(object)
     test_finished = Signal(str, str)

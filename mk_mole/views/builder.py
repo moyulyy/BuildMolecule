@@ -32,7 +32,9 @@ from ..services.deepseek import (
     DeepSeekError,
     GenerationCancelled,
     GenerationResult,
+    ImageStructureResult,
     generate_poscar,
+    parse_structure_image,
 )
 from ..services.image_input import ImageInputError, load_structure_image
 from ..services.molfile import molfile_summary
@@ -56,7 +58,7 @@ from ..widgets.controls import (
 )
 from ..widgets.icons import icon
 from ..widgets.viewer import MoleculeViewer
-from .dialogs import CASSheet, DownloadSheet, SettingsSheet
+from .dialogs import CASSheet, DownloadSheet, ImagePreviewDialog, SettingsSheet
 from .structure_editor import StructureEditorDialog
 
 VIEWS = [
@@ -182,17 +184,56 @@ class GenerateWorker(QThread):
             self.failed.emit(f"生成失败：{exc}")
 
 
+class VisionWorker(QThread):
+    """后台调用 DeepSeek 识别结构图片，避免阻塞 UI。"""
+
+    succeeded = Signal(object)
+    failed = Signal(str)
+    cancelled = Signal()
+
+    def __init__(self, config: AppConfig, image_b64: str):
+        super().__init__()
+        self.config = config
+        self.image_b64 = image_b64
+        self._cancel = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancel.set()
+
+    def run(self) -> None:  # noqa: D401
+        try:
+            result = parse_structure_image(
+                self.config,
+                self.image_b64,
+                is_cancelled=self._cancel.is_set,
+            )
+            if self._cancel.is_set():
+                self.cancelled.emit()
+                return
+            self.succeeded.emit(result)
+        except GenerationCancelled:
+            self.cancelled.emit()
+        except DeepSeekError as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(f"图片识别失败：{exc}")
+
+
 class BuilderPage(QWidget):
     def __init__(self, config: AppConfig, parent: QWidget | None = None):
         super().__init__(parent)
         self.config = config
         self._cas_worker: CasWorker | None = None
         self._gen_worker: GenerateWorker | None = None
+        self._vision_worker: VisionWorker | None = None
         self._compound: CompoundInfo | None = None
         self._molfile: str = ""
         self._molfile_name: str = ""
         self._image_b64: str = ""
         self._image_name: str = ""
+        self._image_qimage: QImage | None = None
+        self._parsed: ImageStructureResult | None = None
+        self._parsed_molfile: str = ""
         self._structure_source: str = ""
         self._structure: StructureData | None = None
         self._initial_structure: StructureData | None = None
@@ -360,9 +401,131 @@ class BuilderPage(QWidget):
         header.addWidget(self.model_badge)
         layout.addLayout(header)
 
-        self.formula_edit = IOSLineEdit("如 CO₂、C₆H₆、CH₃OH")
+        # 结构图片放在最前面：支持“仅图片”生成，并可让 LLM 先识别结构式
+        image_card = QFrame()
+        image_card.setObjectName("InsetCard")
+        image_layout = QVBoxLayout(image_card)
+        image_layout.setContentsMargins(12, 10, 12, 10)
+        image_layout.setSpacing(7)
+
+        image_header = QHBoxLayout()
+        image_header.setSpacing(7)
+        image_header.addWidget(make_label("结构图片", "FieldLabel"))
+        image_hint = make_label("可选 · 仅图片也可以生成", color=Color.tertiary)
+        image_hint.setFont(app_font(10.5))
+        image_header.addWidget(image_hint)
+        image_header.addStretch(1)
+        image_layout.addLayout(image_header)
+
+        image_row = QHBoxLayout()
+        image_row.setSpacing(8)
+        self.image_btn = PillButton(
+            "选择图片", variant="tinted", icon_name="image",
+            icon_color=Color.blue, height=32,
+        )
+        self.image_btn.setFont(app_font(11.5, app_font(11.5).weight()))
+        self.image_btn.clicked.connect(self._pick_image)
+        image_row.addWidget(self.image_btn)
+
+        self.image_chip = QFrame()
+        self.image_chip.setObjectName("InsetCard")
+        image_chip_layout = QHBoxLayout(self.image_chip)
+        image_chip_layout.setContentsMargins(5, 3, 3, 3)
+        image_chip_layout.setSpacing(5)
+        self.image_thumb = QLabel()
+        self.image_thumb.setFixedSize(42, 42)
+        self.image_thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_thumb.setStyleSheet(
+            "background: white; border: 1px solid rgba(60,60,67,10%); border-radius: 8px;"
+        )
+        image_chip_layout.addWidget(self.image_thumb)
+        self.image_chip_label = make_label("", color=Color.secondary)
+        self.image_chip_label.setFont(app_font(10.5))
+        self.image_chip_label.setMaximumWidth(66)
+        image_chip_layout.addWidget(self.image_chip_label)
+        self.image_preview_btn = PillButton("预览", variant="ghost", height=24)
+        self.image_preview_btn.setFont(app_font(10.5, app_font(10.5).weight()))
+        self.image_preview_btn.clicked.connect(self._preview_image)
+        image_chip_layout.addWidget(self.image_preview_btn)
+        image_clear = IconButton("close", "移除结构图片", color=Color.tertiary, size=20)
+        image_clear.setIcon(icon("close", Color.tertiary, 11, 1.6))
+        image_clear.clicked.connect(self._clear_image)
+        image_chip_layout.addWidget(image_clear)
+        self.image_chip.hide()
+        image_row.addWidget(self.image_chip, 1)
+        image_row.addStretch(1)
+        image_layout.addLayout(image_row)
+
+        parse_row = QHBoxLayout()
+        parse_row.setSpacing(8)
+        self.image_parse_btn = PillButton(
+            "识别结构式", variant="secondary", icon_name="sparkles",
+            icon_color=Color.blue, height=32,
+        )
+        self.image_parse_btn.setFont(app_font(11.5, app_font(11.5).weight()))
+        self.image_parse_btn.setEnabled(False)
+        self.image_parse_btn.clicked.connect(self._parse_image)
+        parse_row.addWidget(self.image_parse_btn)
+        self.image_status = make_label("上传图片后可识别结构式", color=Color.tertiary)
+        self.image_status.setFont(app_font(10.5))
+        self.image_status.setWordWrap(True)
+        parse_row.addWidget(self.image_status, 1)
+        self.vision_spinner = Spinner(14, Color.blue, self)
+        self.vision_spinner.hide()
+        parse_row.addWidget(self.vision_spinner)
+        image_layout.addLayout(parse_row)
+
+        self.image_result_card = QFrame()
+        self.image_result_card.setObjectName("ImageResult")
+        self.image_result_card.setStyleSheet(
+            "QFrame#ImageResult { background: rgba(0,122,255,6%);"
+            " border: 1px solid rgba(0,122,255,18%); border-radius: 10px; }"
+        )
+        result_layout = QVBoxLayout(self.image_result_card)
+        result_layout.setContentsMargins(10, 8, 10, 8)
+        result_layout.setSpacing(5)
+        self.parsed_title = make_label(
+            "识别到的结构式", size=11, weight=app_font(11).weight(), color=Color.blue)
+        result_layout.addWidget(self.parsed_title)
+        self.parsed_smiles_edit = IOSLineEdit("识别后的 SMILES")
+        self.parsed_smiles_edit.setFont(app_font(11.5, app_font(11.5).weight(), mono=True))
+        result_layout.addWidget(self.parsed_smiles_edit)
+        self.parsed_meta = make_label("", color=Color.secondary)
+        self.parsed_meta.setFont(app_font(10.5))
+        self.parsed_meta.setWordWrap(True)
+        result_layout.addWidget(self.parsed_meta)
+        result_buttons = QHBoxLayout()
+        result_buttons.setSpacing(7)
+        self.parsed_edit_btn = PillButton(
+            "在 Ketcher 中编辑", variant="tinted", icon_name="molecule",
+            icon_color=Color.blue, height=30,
+        )
+        self.parsed_edit_btn.setFont(app_font(11, app_font(11).weight()))
+        self.parsed_edit_btn.clicked.connect(self._edit_parsed_structure)
+        result_buttons.addWidget(self.parsed_edit_btn)
+        result_buttons.addStretch(1)
+        self.parsed_confirm_btn = PillButton(
+            "使用此结构", variant="primary", icon_name="check",
+            icon_color="#FFFFFF", height=30,
+        )
+        self.parsed_confirm_btn.setFont(app_font(11, app_font(11).weight()))
+        self.parsed_confirm_btn.clicked.connect(self._confirm_parsed_structure)
+        result_buttons.addWidget(self.parsed_confirm_btn)
+        result_layout.addLayout(result_buttons)
+        self.image_result_card.hide()
+        image_layout.addWidget(self.image_result_card)
+        layout.addWidget(image_card)
+
+        self.formula_edit = IOSLineEdit("可选，如 C6H6")
         self.formula_edit.textChanged.connect(self._on_formula_changed)
-        layout.addWidget(self._field("分子式", self.formula_edit, required=True))
+        layout.addWidget(self._field("分子式", self.formula_edit))
+        formula_hint = make_label(
+            "可选；上传图片、填写 SMILES 或导入结构文件也可以生成。",
+            color=Color.tertiary,
+        )
+        formula_hint.setFont(app_font(10.5))
+        formula_hint.setWordWrap(True)
+        layout.addWidget(formula_hint)
 
         name_row = QHBoxLayout()
         name_row.setSpacing(10)
@@ -427,7 +590,7 @@ class BuilderPage(QWidget):
 
         ref_header = QHBoxLayout()
         ref_header.setSpacing(7)
-        ref_header.addWidget(make_label("结构参考", "FieldLabel"))
+        ref_header.addWidget(make_label("结构文件", "FieldLabel"))
         ref_hint = make_label("SDF / MOL / XYZ / PDB", color=Color.tertiary)
         ref_hint.setFont(app_font(10.5))
         ref_header.addWidget(ref_hint)
@@ -443,13 +606,6 @@ class BuilderPage(QWidget):
         self.import_btn.setFont(app_font(11.5, app_font(11.5).weight()))
         self.import_btn.clicked.connect(self._import_structure)
         ref_row.addWidget(self.import_btn)
-        self.image_btn = PillButton(
-            "选择结构图片", variant="tinted", icon_name="image",
-            icon_color=Color.blue, height=32,
-        )
-        self.image_btn.setFont(app_font(11.5, app_font(11.5).weight()))
-        self.image_btn.clicked.connect(self._pick_image)
-        ref_row.addWidget(self.image_btn)
         ref_row.addStretch(1)
         layout.addLayout(ref_row)
 
@@ -476,40 +632,10 @@ class BuilderPage(QWidget):
         chip_layout.addWidget(chip_clear)
         self.file_chip.hide()
         chips_layout.addWidget(self.file_chip)
-
-        self.image_chip = QFrame()
-        self.image_chip.setObjectName("InsetCard")
-        image_chip_layout = QHBoxLayout(self.image_chip)
-        image_chip_layout.setContentsMargins(6, 4, 4, 4)
-        image_chip_layout.setSpacing(6)
-        self.image_thumb = QLabel()
-        self.image_thumb.setFixedSize(40, 40)
-        self.image_thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_thumb.setStyleSheet(
-            "background: white; border: 1px solid rgba(60,60,67,10%); border-radius: 8px;"
-        )
-        image_chip_layout.addWidget(self.image_thumb)
-        self.image_chip_label = make_label("", color=Color.secondary)
-        self.image_chip_label.setFont(app_font(10.5))
-        self.image_chip_label.setMaximumWidth(80)
-        image_chip_layout.addWidget(self.image_chip_label)
-        image_clear = IconButton("close", "移除结构图片", color=Color.tertiary, size=20)
-        image_clear.setIcon(icon("close", Color.tertiary, 11, 1.6))
-        image_clear.clicked.connect(self._clear_image)
-        image_chip_layout.addWidget(image_clear)
-        self.image_chip.hide()
-        chips_layout.addWidget(self.image_chip)
         chips_layout.addStretch(1)
         self.chips_host.hide()
         layout.addWidget(self.chips_host)
 
-        self.image_hint = make_label(
-            "图片会作为 DeepSeek 视觉输入（支持图文）",
-            color=Color.tertiary,
-        )
-        self.image_hint.setFont(app_font(10.5))
-        self.image_hint.setWordWrap(True)
-        layout.addWidget(self.image_hint)
         return frame
 
     def _field(self, label: str, edit: QLineEdit, *, required: bool = False) -> QWidget:
@@ -972,28 +1098,223 @@ class BuilderPage(QWidget):
             return
         self._image_b64 = data_url
         self._image_name = Path(path).name
-        self.image_chip_label.setText(self._shorten(self._image_name, 18))
+        self._image_qimage = image
+        self.image_chip_label.setText(self._shorten(self._image_name, 14))
         self.image_thumb.setPixmap(QPixmap.fromImage(image).scaled(
-            38, 38,
+            40, 40,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         ))
         self.image_chip.show()
+        self.image_parse_btn.setEnabled(True)
+        self.image_parse_btn.setText("识别结构式")
+        self.image_status.setText("待识别 — 可让 DeepSeek 解析结构式")
+        self.image_status.setStyleSheet(f"color: {Color.tertiary};")
+        self.image_result_card.hide()
+        self.parsed_smiles_edit.clear()
+        self.parsed_meta.clear()
+        self._parsed = None
+        self._parsed_molfile = ""
         self._refresh_chips()
         self._toast(f"已添加结构图片 {self._image_name}", "success")
 
     def _clear_image(self) -> None:
+        if self._vision_worker and self._vision_worker.isRunning():
+            self._vision_worker.cancel()
         self._image_b64 = ""
         self._image_name = ""
+        self._image_qimage = None
+        self._parsed = None
+        self._parsed_molfile = ""
         self.image_chip.hide()
         self.image_thumb.clear()
+        self.image_parse_btn.setEnabled(False)
+        self.image_parse_btn.setText("识别结构式")
+        self.image_status.setText("上传图片后可识别结构式")
+        self.image_status.setStyleSheet(f"color: {Color.tertiary};")
+        self.image_result_card.hide()
+        self.parsed_smiles_edit.clear()
+        self.parsed_meta.clear()
+        self.vision_spinner.stop()
+        self.vision_spinner.hide()
+        self.image_btn.setEnabled(True)
         self._refresh_chips()
         self._toast("已移除结构图片", "info")
 
+    def _preview_image(self) -> None:
+        if self._image_qimage is None:
+            self._toast("请先选择结构图片", "warning")
+            return
+        dialog = ImagePreviewDialog(self._image_qimage, self._image_name, self.window())
+        try:
+            dialog.exec()
+        finally:
+            dialog.deleteLater()
+
     def _refresh_chips(self) -> None:
-        self.chips_host.setVisible(
-            not self.file_chip.isHidden() or not self.image_chip.isHidden()
+        self.chips_host.setVisible(not self.file_chip.isHidden())
+
+    def _parse_image(self) -> None:
+        if not self._image_b64:
+            self._toast("请先选择结构图片", "warning")
+            return
+        if not self.config.configured:
+            self._toast("请先配置 DeepSeek API Key", "warning")
+            self.open_settings()
+            return
+        if self._vision_worker and self._vision_worker.isRunning():
+            return
+        self._parsed = None
+        self._parsed_molfile = ""
+        self.image_result_card.hide()
+        self.parsed_smiles_edit.clear()
+        self.parsed_meta.clear()
+        self.image_parse_btn.setEnabled(False)
+        self.image_parse_btn.setText("识别中…")
+        self.image_btn.setEnabled(False)
+        self.image_status.setText("DeepSeek 正在识别图片中的结构…")
+        self.image_status.setStyleSheet(f"color: {Color.blue};")
+        self.vision_spinner.show()
+        self.vision_spinner.start()
+        worker = VisionWorker(self.config, self._image_b64)
+        worker.succeeded.connect(self._on_vision_succeeded)
+        worker.failed.connect(self._on_vision_failed)
+        worker.cancelled.connect(self._on_vision_cancelled)
+        worker.finished.connect(self._on_vision_finished)
+        worker.finished.connect(worker.deleteLater)
+        self._vision_worker = worker
+        worker.start()
+
+    def _on_vision_succeeded(self, result: ImageStructureResult) -> None:
+        if not self._image_b64:
+            return
+        self._parsed = result
+        self._parsed_molfile = ""
+        self.parsed_smiles_edit.setText(result.smiles)
+        parts = []
+        if result.formula:
+            parts.append(result.formula)
+        if result.name:
+            parts.append(result.name)
+        if result.confidence:
+            parts.append(f"置信度 {result.confidence}")
+        if result.notes:
+            parts.append(result.notes[:120])
+        self.parsed_meta.setText(" · ".join(parts) or "请核对识别出的 SMILES")
+        self.image_result_card.show()
+        self.image_status.setText("已识别，请核对结构式")
+        self.image_status.setStyleSheet(f"color: {Color.green};")
+        self.image_parse_btn.setText("重新识别")
+        self._toast("已识别结构式，请核对后使用", "success", 3600)
+
+    def _on_vision_failed(self, message: str) -> None:
+        if not self._image_b64:
+            return
+        self.image_status.setText("识别失败")
+        self.image_status.setStyleSheet(f"color: {Color.red};")
+        self.image_parse_btn.setText("重新识别")
+        self._toast(message, "error", 5200)
+
+    def _on_vision_cancelled(self) -> None:
+        if not self._image_b64:
+            return
+        self.image_status.setText("已取消识别")
+        self.image_status.setStyleSheet(f"color: {Color.tertiary};")
+        self._toast("已取消图片识别", "info")
+
+    def _on_vision_finished(self) -> None:
+        self.vision_spinner.stop()
+        self.vision_spinner.hide()
+        self.image_btn.setEnabled(True)
+        self.image_parse_btn.setEnabled(bool(self._image_b64))
+        self._vision_worker = None
+
+    def _edit_parsed_structure(self) -> None:
+        if self._parsed is None:
+            return
+        dialog = StructureEditorDialog(
+            self.window(),
+            smiles=self.parsed_smiles_edit.text().strip(),
+            molfile=self._parsed_molfile,
         )
+        try:
+            accepted = dialog.exec() == QDialog.DialogCode.Accepted
+            data = dialog.result_data if accepted else None
+        finally:
+            dialog.deleteLater()
+        if not data:
+            return
+        smiles = str(data.get("smiles") or "").strip()
+        if not smiles:
+            return
+        self.parsed_smiles_edit.setText(smiles)
+        self._parsed.smiles = smiles
+        self._parsed_molfile = str(data.get("molfile") or "")
+        formula, atom_count = molfile_summary(self._parsed_molfile)
+        if formula:
+            self._parsed.formula = formula
+        parts = []
+        if self._parsed.formula:
+            parts.append(self._parsed.formula)
+        if self._parsed.name:
+            parts.append(self._parsed.name)
+        if self._parsed.confidence:
+            parts.append(f"置信度 {self._parsed.confidence}")
+        if atom_count:
+            parts.append(f"{atom_count} 原子 · Ketcher")
+        self.parsed_meta.setText(" · ".join(parts) or "请核对编辑后的 SMILES")
+        self.image_result_card.show()
+        self._toast("已用 Ketcher 结构更新识别结果", "success")
+
+    def _confirm_parsed_structure(self) -> None:
+        if self._parsed is None:
+            return
+        smiles = self.parsed_smiles_edit.text().strip()
+        if not smiles:
+            self._toast("识别结果为空，请先在 Ketcher 中编辑或重新识别", "warning")
+            return
+        formula = (self._parsed.formula or "").strip()
+        if formula and parse_formula(formula):
+            self.formula_edit.setText(normalize_formula(formula))
+        self.smiles_edit.setText(smiles)
+        self._structure_source = "图片识别结构"
+        if self._parsed_molfile:
+            self._molfile = self._parsed_molfile
+            self._molfile_name = "图片识别结构"
+        else:
+            self._molfile = ""
+            self._molfile_name = ""
+        self.file_chip.hide()
+        self._compound = None
+        self.image_result_card.hide()
+        self.image_status.setText("已确认结构式，可生成 3D 结构")
+        self.image_status.setStyleSheet(f"color: {Color.green};")
+        self.image_parse_btn.setText("重新识别")
+
+        pixmap = None
+        if self._image_qimage is not None:
+            pixmap = QPixmap.fromImage(self._image_qimage).scaled(
+                52, 52,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        if pixmap is not None:
+            self.confirmed_image.setPixmap(pixmap)
+        else:
+            self.confirmed_image.setPixmap(
+                icon("image", Color.secondary, 24, 1.6).pixmap(24, 24))
+        self.confirmed_badge.setText("图片识别")
+        meta = formula or "结构式"
+        if self._parsed.confidence:
+            meta += f" · 置信度 {self._parsed.confidence}"
+        meta += " · 已确认"
+        self.confirmed_meta.setText(meta)
+        self.confirmed_smiles.setText(self._shorten(smiles))
+        self.confirmed_card.show()
+        self._refresh_chips()
+        self._toast("已确认结构式，可生成 3D 结构", "success")
+        QTimer.singleShot(
+            80, lambda: self.scroll.ensureWidgetVisible(self.confirmed_card, 0, 12))
 
     # ============================================================ 结构编辑
     def _open_structure_editor(self) -> None:
@@ -1026,8 +1347,20 @@ class BuilderPage(QWidget):
         # 编辑器结构是新的权威来源，清掉旧的图片/文件参考，避免冲突
         self._image_b64 = ""
         self._image_name = ""
+        self._image_qimage = None
+        self._parsed = None
+        self._parsed_molfile = ""
         self.image_chip.hide()
         self.image_thumb.clear()
+        self.image_result_card.hide()
+        self.parsed_smiles_edit.clear()
+        self.parsed_meta.clear()
+        self.image_parse_btn.setEnabled(False)
+        self.image_parse_btn.setText("识别结构式")
+        self.image_status.setText("上传图片后可识别结构式")
+        self.image_status.setStyleSheet(f"color: {Color.tertiary};")
+        self.vision_spinner.stop()
+        self.vision_spinner.hide()
         self.file_chip.hide()
         self._refresh_chips()
 
@@ -1065,20 +1398,35 @@ class BuilderPage(QWidget):
     def _start_generation(self) -> None:
         if self._relax_worker and self._relax_worker.isRunning():
             return
+        if self.image_result_card.isVisible():
+            self._toast("请先核对识别结果，点击「使用此结构」后再生成", "warning")
+            return
         formula = self.formula_edit.text().strip()
-        if not parse_formula(formula):
+        has_image = bool(self._image_b64)
+        has_smiles = bool(self.smiles_edit.text().strip())
+        has_molfile = bool(self._molfile)
+        if formula and not parse_formula(formula):
             self.formula_edit.setProperty("error", "true")
             _repolish(self.formula_edit)
             self.formula_edit.setFocus()
-            self._toast("请填写有效的分子式，例如 C6H6", "warning")
+            self._toast("分子式格式不正确；也可清空分子式，改用图片或 SMILES", "warning")
             return
+        if not (formula or has_image or has_smiles or has_molfile):
+            self.formula_edit.setProperty("error", "true")
+            _repolish(self.formula_edit)
+            self.formula_edit.setFocus()
+            self._toast("请填写分子式，或上传结构图片 / 填写 SMILES / 导入结构文件", "warning")
+            return
+        self.formula_edit.setProperty("error", "false")
+        _repolish(self.formula_edit)
         if not self.config.configured:
             self._toast("请先配置 DeepSeek API Key", "warning")
             self.open_settings()
             return
 
+        normalized_formula = normalize_formula(formula) if formula else ""
         payload = {
-            "formula": normalize_formula(formula),
+            "formula": normalized_formula,
             "name": self.name_edit.text().strip(),
             "english_name": self.english_edit.text().strip(),
             "cas": self.cas_edit.text().strip(),
@@ -1088,10 +1436,17 @@ class BuilderPage(QWidget):
             "image_b64": self._image_b64,
             "structure_source": (
                 self._structure_source
+                or ("图片识别结构" if self._parsed else "")
                 or ("结构图片" if self._image_b64 else "")
                 or ("SMILES（手填）" if self.smiles_edit.text().strip() else "")
+                or ("结构文件" if self._molfile else "")
             ),
         }
+        target = normalized_formula or (
+            "图片识别结构" if self._parsed else
+            "结构图片" if has_image else
+            "SMILES" if has_smiles else "结构文件"
+        )
         self._previous_structure = self._structure
         self.progress_card.show()
         self.notice.hide()
@@ -1110,7 +1465,7 @@ class BuilderPage(QWidget):
         self._switch_loading("DeepSeek 正在构建结构…")
         self._scroll_to_progress()
         self._append_status(
-            f"开始生成：{normalize_formula(formula)} · 模型 {self.config.model} · "
+            f"开始生成：{target} · 模型 {self.config.model} · "
             f"思考强度 {self.config.reasoning_effort}")
 
         self._gen_worker = GenerateWorker(self.config, payload)
@@ -1633,6 +1988,8 @@ class BuilderPage(QWidget):
             return
         if self._relax_worker and self._relax_worker.isRunning():
             return
+        if self._vision_worker and self._vision_worker.isRunning():
+            self._vision_worker.cancel()
         self.formula_edit.clear()
         self.name_edit.clear()
         self.english_edit.clear()
@@ -1644,6 +2001,9 @@ class BuilderPage(QWidget):
         self._molfile_name = ""
         self._image_b64 = ""
         self._image_name = ""
+        self._image_qimage = None
+        self._parsed = None
+        self._parsed_molfile = ""
         self._structure_source = ""
         self._initial_structure = None
         self._relax_log_count = 0
@@ -1651,6 +2011,16 @@ class BuilderPage(QWidget):
         self.confirmed_card.hide()
         self.file_chip.hide()
         self.image_chip.hide()
+        self.image_parse_btn.setEnabled(False)
+        self.image_parse_btn.setText("识别结构式")
+        self.image_status.setText("上传图片后可识别结构式")
+        self.image_status.setStyleSheet(f"color: {Color.tertiary};")
+        self.image_result_card.hide()
+        self.parsed_smiles_edit.clear()
+        self.parsed_meta.clear()
+        self.vision_spinner.stop()
+        self.vision_spinner.hide()
+        self.image_btn.setEnabled(True)
         self._refresh_chips()
         self.image_thumb.clear()
         self.progress_card.hide()
@@ -1690,6 +2060,12 @@ class BuilderPage(QWidget):
             if not worker.wait(2500):
                 worker.terminate()
                 worker.wait(500)
+        vision = self._vision_worker
+        if vision and vision.isRunning():
+            vision.cancel()
+            if not vision.wait(1500):
+                vision.terminate()
+                vision.wait(300)
         cas = self._cas_worker
         if cas and cas.isRunning():
             cas.wait(1000)

@@ -24,6 +24,8 @@ DeepSeek 生成 VASP POSCAR，CHGNet 快速弛豫，3Dmol 本地预览，一键�
 ·
 <a href="#-chgnet-弛豫">CHGNet</a>
 
+> **v1.1.0 新增**：仅图片生成 · DeepSeek 图片 → SMILES 识别 · 核对/编辑/确认 · 放大预览；图片入口已前置到表单最上方。
+
 </div>
 
 ---
@@ -39,7 +41,7 @@ DeepSeek 生成 VASP POSCAR，CHGNet 快速弛豫，3Dmol 本地预览，一键�
 | 🧠 **DeepSeek 原生集成** | 默认 `deepseek-flash` + `reasoning_effort=high`；流式显示思考过程，支持 `deepseek-v4-pro`、`none/low/high/max` 思考强度、取消与自动重试。 |
 | ✏️ **Ketcher 结构编辑** | 内置自托管 Ketcher 3.4；确认后自动回填 SMILES、molfile、分子式和原子数，作为 LLM 的精确连接表参考。 |
 | 🧠 **CHGNet 快速弛豫** | 生成后默认自动弛豫（固定晶胞）；独立 `chgnet_env`，自动检测 CUDA / CPU，支持取消，结果可继续导出。 |
-| 🖼️ **多模态输入** | 分子式、名称、CAS、SMILES、SDF/MOL/XYZ/PDB、结构图片（PNG/JPG/WebP/BMP）。 |
+| 🖼️ **多模态 / 仅图片** | 分子式、名称、CAS、SMILES、SDF/MOL/XYZ/PDB 均可选；**仅上传图片也能生成**。让 DeepSeek 先识别为 SMILES/分子式，在界面或 Ketcher 中核对/编辑，确认后再生成；支持图片放大预览。 |
 | 🔎 **CAS 检索** | PubChem 查询 CID、分子式、分子量、IUPAC、别名、SMILES 与二维结构图。 |
 | 🎨 **本地 3D 预览** | 3Dmol.js 球棍模型、Jmol 配色、悬停元素标签、六向视角、保存当前视角 PNG。 |
 | 📦 **多格式导出** | POSCAR、CIF、SDF、XYZ、PDB；弛豫后下载的是 CHGNet 优化结构。 |
@@ -66,6 +68,10 @@ DeepSeek 生成 VASP POSCAR，CHGNet 快速弛豫，3Dmol 本地预览，一键�
 | CAS 检索 | 结构图片输入 |
 | :---: | :---: |
 | <img src="docs/cas.png" width="440" alt="CAS 检索"> | <img src="docs/image-input.png" width="440" alt="结构图片"> |
+
+| 图片识别结构式 | 图片放大预览 |
+| :---: | :---: |
+| <img src="docs/image-parse.png" width="440" alt="图片识别结构式"> | <img src="docs/image-preview.png" width="440" alt="图片放大预览"> |
 
 <p align="center">
   <b>CHGNet 弛豫完成</b><br>
@@ -151,19 +157,23 @@ DEEPSEEK_REASONING_EFFORT=high
 
 ## 🧭 使用流程
 
-1. **分子式**（必填）：`C6H6`、`H2O`、`CH3OH`，支持 `C₆H₆` 下标。
-2. 可选填中文名、英文名、CAS 号、补充说明。
-3. **CAS 检索**：确认 PubChem 的二维结构、SMILES 和原子数。
-4. **结构编辑**：Ketcher 中绘制/修改，确认后回填 SMILES + molfile。
-5. **结构图片 / 结构文件**：上传参考图（自动缩放为视觉输入）或 SDF/MOL/XYZ/PDB。
-6. **生成后 CHGNet 弛豫** 默认开启，可关闭。
-7. 点击 **开始生成结构** 或 `Ctrl + Enter`：
+1. **结构图片（可选，推荐）**：在表单最上方选择 PNG/JPG/WebP/BMP；缩略图旁的「预览」可放大查看。
+2. 点击 **识别结构式**：DeepSeek 解析图片，返回 SMILES、分子式、名称与置信度。
+3. **核对 / 编辑**：直接修改识别出的 SMILES，或点「在 Ketcher 中编辑」；确认后点 **使用此结构**。
+4. **分子式（可选）**：`C6H6`、`H2O`、`CH3OH`，支持 `C₆H₆` 下标；已有图片/SMILES/结构文件时可留空。
+5. 可选填中文名、英文名、CAS 号、补充说明；CAS 检索可确认 PubChem 二维结构与 SMILES。
+6. **结构编辑**：也可直接用 Ketcher 绘制/修改，确认后回填 SMILES + molfile。
+7. **结构文件**：SDF / MOL / XYZ / PDB；与图片/SMILES 同时存在时，连接表优先级更高。
+8. **生成后 CHGNet 弛豫** 默认开启，可关闭。
+9. 点击 **开始生成结构** 或 `Ctrl + Enter`：
    - DeepSeek 流式生成 POSCAR；
    - 立即显示初始结构；
    - 自动进入 CHGNet 固定晶胞弛豫；
    - 可随时 **取消生成 / 取消弛豫**；
    - 失败或取消保留初始结构。
-8. **下载结构**：POSCAR / CIF / SDF / XYZ / PDB；弛豫成功时导出弛豫后结构。
+10. **下载结构**：POSCAR / CIF / SDF / XYZ / PDB；弛豫成功时导出弛豫后结构。
+
+> **仅图片直接生成**：上传图片后也可以不点击识别，直接点生成；分子式可以留空，DeepSeek 会从图片识别元素与连接。
 
 ### 快捷键
 
@@ -245,6 +255,8 @@ flowchart LR
 名称 / CAS / 分子式 / 补充说明
 ```
 
+如果只提供图片而没有分子式，这也是有效输入：DeepSeek 会先识别图片中的元素、键线、官能团与立体信息，再生成 POSCAR，不会要求补充分子式。
+
 并强制自检：原子守恒、元素行/数目行、连接性/价态、立体化学、30 Å 盒子居中、唯一 POSCAR。
 
 ---
@@ -279,7 +291,7 @@ BuildMolecule/
 │   ├── tools/                  # 独立 CHGNet probe / runner
 │   ├── views/                  # 主页面、弹层、Ketcher 编辑器
 │   └── widgets/                # 无边框窗口、自绘控件、3D 查看器
-├── tests/                      # 23 项离线测试
+├── tests/                      # 25 项离线测试
 ├── docs/                       # README 截图
 ├── data/                       # 运行时配置/缓存（gitignored）
 └── dist/                       # 便携构建输出（gitignored）
@@ -291,11 +303,11 @@ BuildMolecule/
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest tests/ -q          # 23 passed
+python -m pytest tests/ -q          # 25 passed
 python -m pyflakes mk_mole tests main.py main.pyw
 ```
 
-覆盖：POSCAR 提取/居中/导出、组成告警、DeepSeek mock SSE/图片消息/提示词、便携配置、图片编码、molfile 摘要、CHGNet 环境候选、关闭按钮事件等。
+覆盖：POSCAR 提取/居中/导出、组成告警、DeepSeek mock SSE/图片消息/提示词、图片识别 JSON、仅图片生成、便携配置、图片编码、molfile 摘要、CHGNet 环境候选、关闭按钮事件等。
 
 ---
 

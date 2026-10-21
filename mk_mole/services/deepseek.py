@@ -9,6 +9,7 @@ reasoning_effort = high（思考模式开启），可在设置中切换 deepseek
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -48,14 +49,28 @@ class GenerationResult:
     model: str
 
 
+@dataclass
+class ImageStructureResult:
+    """从结构图片中识别出的化学结构。"""
+
+    smiles: str
+    formula: str = ""
+    name: str = ""
+    confidence: str = ""
+    notes: str = ""
+    raw: str = ""
+
+
 SYSTEM_PROMPT = """你是计算材料学结构建模助手。你的唯一任务：根据用户提供的结构信息，构建一个合理的三维分子结构，并输出**唯一一个**完整、可解析的 VASP5 POSCAR。
 
 【输入优先级（冲突时严格按此顺序）】
+0. 用户可能只提供一张结构图片而不提供分子式；这是有效输入。不得要求用户补充分子式，也不得拒绝生成。
 1. 结构编辑器 / 结构文件：Ketcher 导出的 molfile、用户上传的 SDF / MOL / XYZ / PDB。它们的连接表、原子种类、电荷和立体信息最精确，必须严格保留。
 2. SMILES：严格按 SMILES 的连接、环、芳香性、顺反与手性标记建模；SMILES 与名称/分子式冲突时，以 SMILES 为准。
 3. 结构图片：识别图片中的元素标签、键线、官能团、环、顺反/立体信息；图片可能是手绘或截图，看不清的标签按最常见价态和化学常识补全，并在正文说明。
 4. 名称 / CAS / 英文名 / 分子式 / 补充说明：只用于校验和补全，不得覆盖上面更明确的连接信息。
 如果结构图片与 molfile/SMILES 明显冲突：以 molfile/SMILES 的连接表为准，图片用于补充构象/官能团；如果只有图片，则以图片为准。
+如果只有图片而没有分子式：先从图片识别元素、键线、官能团和电荷，再按化学常识补全氢原子并生成结构；不要因为缺少分子式而停止。
 如果信息不足或存在歧义：选择最常见、中性、闭壳层的合理结构，并在代码块外的正文中明确说明你的假设。
 
 【化学与立体化学规则】
@@ -113,6 +128,28 @@ f) 只有一个 ```poscar 代码块，且块内没有多余内容。
 - 不要反问用户；在信息不足时按上面的规则选择最合理结构并说明假设。"""
 
 
+VISION_SYSTEM_PROMPT = """你是化学结构识别器。用户会提供一张化学结构图片（手绘、软件截图、论文图或反应式）。请识别图片中的主要化学结构，并只输出一个 JSON 对象，不要输出任何解释、Markdown 代码块或多余文字。
+
+JSON 格式：
+{
+  "smiles": "有效的 SMILES；保留元素、电荷、芳香性、顺反/手性信息",
+  "formula": "Hill 分子式，例如 C6H6；无法确定时留空",
+  "name": "能确定的常用名；无法确定时留空",
+  "confidence": "high / medium / low",
+  "notes": "识别依据、歧义或假设；不超过 120 字"
+}
+
+规则：
+- 图片中若有多个结构或反应式，优先识别箭头右侧的主要产物；在 notes 说明。
+- SMILES 必须包含完整分子；盐/离子可用点号分隔；不要省略关键电荷。
+- 看不清的原子标签不要臆造；在 notes 中标注不确定处，confidence 设为 medium/low。
+- 如果图片不是化学结构或完全无法辨认，输出：
+  {"smiles": "", "formula": "", "name": "", "confidence": "low", "notes": "无法识别的原因"}
+- 不要反问，不要输出化学结构图，只输出 JSON。"""
+
+VISION_USER_TEXT = "请识别这张图片中的主要化学结构，并按系统要求输出 JSON。"
+
+
 def _messages(payload: dict) -> list[dict]:
     formula = (payload.get("formula") or "").strip()
     name = (payload.get("name") or "").strip()
@@ -124,17 +161,27 @@ def _messages(payload: dict) -> list[dict]:
     structure_source = (payload.get("structure_source") or "").strip()
     image_b64 = (payload.get("image_b64") or "").strip()
 
+    has_structure_hint = bool(formula or image_b64 or smiles or molfile)
+    formula_display = formula or (
+        "（未提供；如已提供图片/SMILES/结构文件，请直接据此生成，不要要求补充分子式）"
+        if has_structure_hint else "（未提供）"
+    )
     user_text = (
         "请生成以下分子的 POSCAR 结构：\n"
         f"- 结构来源：{structure_source or '（未指定）'}\n"
         f"- 名称：{name or '（未提供）'}\n"
         f"- 英文名称：{english or '（未提供）'}\n"
         f"- CAS 号：{cas or '（未提供）'}\n"
-        f"- 分子式：{formula or '（未提供）'}\n"
+        f"- 分子式：{formula_display}\n"
         f"- 补充说明：{description or '（无）'}\n"
         f"- 结构图片：{'已提供（见下图，请识别其中的结构式）' if image_b64 else '未提供'}\n"
         f"- 结构文件：{'已提供（见下方结构数据）' if molfile else '未提供'}\n"
     )
+    if not formula and (image_b64 or smiles or molfile):
+        user_text += (
+            "\n- 用户没有提供分子式。这是允许的：请直接依据图片 / SMILES / 结构文件建模，"
+            "不要反问或要求补充分子式；最后在正文说明你是如何识别元素与原子数的。\n"
+        )
     user_text += (
         "\n请严格按系统提示中的输入优先级建模："
         "molfile/SMILES 的连接表与立体信息 > 结构图片 > 名称/CAS/分子式；"
@@ -379,6 +426,96 @@ def stream_chat(
     if is_cancelled and is_cancelled():
         raise GenerationCancelled()
     return "".join(content_parts).strip(), "".join(reasoning_parts).strip(), finish_reason, model
+
+
+def _vision_json(text: str) -> dict:
+    """从模型输出中提取 JSON；兼容 ```json 代码块与 SMILES: 文本。"""
+    raw = (text or "").strip()
+    if not raw:
+        return {}
+    candidates: list[str] = []
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.S | re.I)
+    if fenced:
+        candidates.append(fenced.group(1))
+    start, end = raw.find("{"), raw.rfind("}")
+    if start != -1 and end > start:
+        candidates.append(raw[start:end + 1])
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(data, dict):
+            return data
+    # 模型偶尔只写一行 SMILES：不要猜测普通文本，只认显式字段
+    match = re.search(r"(?im)^\s*smiles\s*[:：]\s*([^\s`]+)", raw)
+    if match:
+        return {"smiles": match.group(1), "notes": raw[:300]}
+    return {}
+
+
+def parse_structure_image(
+    config: AppConfig,
+    image_b64: str,
+    *,
+    on_event: EventCallback | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
+) -> ImageStructureResult:
+    """让 DeepSeek 读取结构图片，返回可编辑的 SMILES / 分子式。
+
+    这里关闭自由思考以降低延迟；识别结果只是草稿，必须由用户在界面中核对后
+    才写入主结构字段。
+    """
+    if not (image_b64 or "").strip().startswith("data:image/"):
+        raise DeepSeekError("图片数据无效，请重新选择结构图片")
+    if on_event:
+        on_event("status", "正在让 DeepSeek 识别结构图片…")
+    messages = [
+        {"role": "system", "content": VISION_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": VISION_USER_TEXT},
+                {"type": "image_url", "image_url": {"url": image_b64}},
+            ],
+        },
+    ]
+    content, reasoning, finish, _model = stream_chat(
+        config,
+        messages,
+        is_cancelled=is_cancelled,
+        max_tokens=4096,
+        reasoning_effort="none",
+    )
+    raw = content or reasoning
+    data = _vision_json(raw)
+    smiles = str(data.get("smiles") or "").strip().strip("`").strip()
+    if not smiles or smiles.lower() in {"none", "null", "n/a"}:
+        note = str(data.get("notes") or data.get("error") or "").strip()
+        if finish == "length":
+            raise DeepSeekError("识别输出被截断，请换一张更清晰/更小的图片重试")
+        raise DeepSeekError(
+            "未能从图片中识别出结构式"
+            + (f"：{note}" if note else "；请换一张更清晰的图片，或手动填写 SMILES")
+        )
+    if len(smiles) > 2000:
+        raise DeepSeekError("识别出的 SMILES 过长，请换一张更聚焦的图片")
+    formula = str(data.get("formula") or "").strip()
+    name = str(data.get("name") or "").strip()
+    confidence = str(data.get("confidence") or "").strip().lower()
+    if confidence not in {"high", "medium", "low"}:
+        confidence = ""
+    notes = str(data.get("notes") or "").strip()[:500]
+    if on_event:
+        on_event("status", "结构图片识别完成")
+    return ImageStructureResult(
+        smiles=smiles,
+        formula=formula,
+        name=name,
+        confidence=confidence,
+        notes=notes,
+        raw=raw[:4000],
+    )
 
 
 def generate_poscar(
