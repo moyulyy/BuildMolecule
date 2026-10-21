@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MK-MOLE 3D</title>
+<style>
+  html, body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #ffffff;
+  }
+  #viewer {
+    width: 100%;
+    height: 100%;
+    background: #ffffff;
+  }
+  #hint {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    font: 500 13px "Segoe UI", "Microsoft YaHei UI", sans-serif;
+    color: #a1a1a6;
+    letter-spacing: .2px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .25s ease;
+  }
+  #hint.show { opacity: 1; }
+</style>
+<script src="3Dmol-min.js"></script>
+</head>
+<body>
+<div id="viewer"></div>
+<div id="hint">正在准备 3D 引擎…</div>
+<script>
+(function () {
+  "use strict";
+  var viewer = null;
+  var hoverLabel = null;
+  var bg = 0xffffff;
+
+  function init() {
+    if (viewer) return true;
+    if (typeof $3Dmol === "undefined") return false;
+    viewer = $3Dmol.createViewer("viewer", {
+      backgroundColor: bg,
+      antialias: true,
+      alpha: false
+    });
+    window.addEventListener("resize", function () {
+      try { viewer.resize(); viewer.render(); } catch (e) { /* ignore */ }
+    });
+    document.getElementById("viewer").addEventListener("dblclick", resetView);
+    return true;
+  }
+
+  function flashHint(text, ms) {
+    var el = document.getElementById("hint");
+    if (!el) return;
+    el.textContent = text || "";
+    el.classList.add("show");
+    if (ms) {
+      window.clearTimeout(window.__mkHintTimer);
+      window.__mkHintTimer = window.setTimeout(function () {
+        el.classList.remove("show");
+      }, ms);
+    }
+  }
+
+  window.mkReady = function () {
+    return init();
+  };
+
+  window.setStructure = function (sdf) {
+    if (!init()) return false;
+    try {
+      viewer.removeAllModels();
+      viewer.removeAllShapes();
+      viewer.removeAllLabels();
+      hoverLabel = null;
+      var model = viewer.addModel(sdf, "sdf");
+      viewer.setStyle({}, {
+        sphere: { colorscheme: "Jmol", radius: 0.46 },
+        stick: { colorscheme: "Jmol", radius: 0.17 }
+      });
+      viewer.setHoverable({}, true, function (atom) {
+        if (!atom || !atom.atom) return;
+        var a = atom.atom;
+        if (hoverLabel !== null) { try { viewer.removeLabel(hoverLabel); } catch (e) {} }
+        hoverLabel = viewer.addLabel(a.elem || a.element || "", {
+          position: { x: a.x, y: a.y, z: a.z + 0.42 },
+          fontSize: 12,
+          fontColor: "#1c1c1e",
+          backgroundColor: "#ffffff",
+          backgroundOpacity: 0.92,
+          borderThickness: 0.5,
+          borderColor: "#d1d1d6",
+          inFront: true
+        });
+        viewer.render();
+      }, function () {
+        if (hoverLabel !== null) { try { viewer.removeLabel(hoverLabel); } catch (e) {} }
+        hoverLabel = null;
+        viewer.render();
+      });
+      viewer.zoomTo();
+      viewer.render();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  };
+
+  window.setView = function (qx, qy, qz, qw) {
+    if (!init()) return false;
+    try {
+      var cur = viewer.getView();
+      viewer.setView([cur[0], cur[1], cur[2], cur[3], qx, qy, qz, qw], true);
+      viewer.render();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  };
+
+  window.resetView = function () {
+    if (!init()) return false;
+    try {
+      viewer.zoomTo();
+      viewer.render();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  };
+
+  window.pngURI = function () {
+    if (!init()) return "";
+    try {
+      return viewer.pngURI();
+    } catch (e) {
+      return "";
+    }
+  };
+
+  window.clearStructure = function () {
+    if (!viewer) return;
+    try {
+      viewer.removeAllModels();
+      viewer.removeAllShapes();
+      viewer.removeAllLabels();
+      viewer.render();
+    } catch (e) { /* ignore */ }
+  };
+
+  // 3Dmol 加载完成后再初始化，避免脚本竞态
+  if (!init()) {
+    flashHint("正在准备 3D 引擎…", 0);
+    var tries = 0;
+    var timer = setInterval(function () {
+      if (init()) {
+        clearInterval(timer);
+        flashHint("", 1);
+        window.mkViewerReady = true;
+      } else if (++tries > 60) {
+        clearInterval(timer);
+        flashHint("3D 引擎加载失败", 0);
+      }
+    }, 100);
+  } else {
+    window.mkViewerReady = true;
+  }
+})();
+</script>
+</body>
+</html>

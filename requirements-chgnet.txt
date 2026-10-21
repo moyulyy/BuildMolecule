@@ -1,0 +1,14 @@
+# CHGNet relaxation engine dependencies.
+#
+# PyTorch must be installed separately by install_chgnet.bat so the installer
+# can choose a CUDA wheel when an NVIDIA GPU is available, or a CPU wheel
+# otherwise. pip will not install a second torch here because it is already
+# satisfied by the installer step.
+#
+#   install_chgnet.bat            (Windows, recommended)
+#   pip install -r requirements-chgnet.txt
+#
+chgnet>=0.4.0
+pymatgen>=2024.1
+ase>=3.22
+numpy>=1.24,<2.0
