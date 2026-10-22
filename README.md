@@ -24,7 +24,7 @@ DeepSeek 生成 VASP POSCAR，CHGNet 快速弛豫，3Dmol 本地预览，一键�
 ·
 <a href="#-chgnet-弛豫">CHGNet</a>
 
-> **最新更新**：CAS Common Chemistry 官方检索 · 设置中填写 CAS API Key · 修复 CAS 结构图空白与来源标签裁切。
+> **v1.2.0 更新**：CAS Common Chemistry 官方检索 · 设置中填写 CAS API Key · 修复 CAS 结构图空白与来源标签裁切。
 
 </div>
 
