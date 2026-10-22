@@ -7,9 +7,8 @@ import re
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QThread, QTimer, Qt, Signal
-from PySide6.QtGui import QImage, QPainter, QPixmap, QShortcut, QKeySequence, QTextCursor
-from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtCore import QThread, QTimer, Qt, Signal
+from PySide6.QtGui import QImage, QPixmap, QShortcut, QKeySequence, QTextCursor
 from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -27,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from ..config import DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, AppConfig
 from ..elements import element_color
+from ..services.cas import CASError, lookup_compound
 from ..services.chgnet import ChgnetEnvironment, ChgnetProbeWorker, ChgnetRelaxWorker
 from ..services.deepseek import (
     DeepSeekError,
@@ -39,7 +39,7 @@ from ..services.deepseek import (
 from ..services.image_input import ImageInputError, load_structure_image
 from ..services.molfile import molfile_summary
 from ..services.poscar import StructureData, normalize_formula, parse_formula
-from ..services.pubchem import CompoundInfo, PubChemError, lookup_cas
+from ..services.pubchem import CompoundInfo, PubChemError
 from ..theme import Color, app_font
 from ..widgets.controls import (
     ElementDot,
@@ -56,7 +56,7 @@ from ..widgets.controls import (
     hline,
     make_label,
 )
-from ..widgets.icons import icon
+from ..widgets.icons import icon, svg_pixmap
 from ..widgets.viewer import MoleculeViewer
 from .dialogs import CASSheet, DownloadSheet, ImagePreviewDialog, SettingsSheet
 from .structure_editor import StructureEditorDialog
@@ -89,37 +89,23 @@ def _clear_layout(layout) -> None:
 
 
 def _svg_pixmap(svg: str, size: int = 52) -> QPixmap | None:
-    """把 Ketcher 返回的 SVG 渲染成带白底的高分屏缩略图。"""
-    if not svg.strip():
-        return None
-    try:
-        renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
-        if not renderer.isValid():
-            return None
-        image = QImage(size * 2, size * 2, QImage.Format.Format_ARGB32)
-        image.fill(Qt.GlobalColor.white)
-        painter = QPainter(image)
-        renderer.render(painter)
-        painter.end()
-        pixmap = QPixmap.fromImage(image)
-        pixmap.setDevicePixelRatio(2.0)
-        return pixmap
-    except Exception:  # noqa: BLE001
-        return None
+    """把 Ketcher / CAS 返回的 SVG 渲染成带白底的高分屏缩略图。"""
+    return svg_pixmap(svg, size)
 
 
 class CasWorker(QThread):
     done = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, cas: str):
+    def __init__(self, cas: str, cas_api_key: str = ""):
         super().__init__()
         self.cas = cas
+        self.cas_api_key = cas_api_key
 
     def run(self) -> None:  # noqa: D401
         try:
-            self.done.emit(lookup_cas(self.cas))
-        except PubChemError as exc:
+            self.done.emit(lookup_compound(self.cas, self.cas_api_key))
+        except (PubChemError, CASError) as exc:
             self.failed.emit(str(exc))
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(f"CAS 检索失败：{exc}")
@@ -935,7 +921,7 @@ class BuilderPage(QWidget):
     def _on_settings_saved(self, config: AppConfig) -> None:
         self.config = config
         self._apply_config_state()
-        self._toast("DeepSeek 设置已保存", "success")
+        self._toast("设置已保存", "success")
 
     def persist(self) -> None:
         self.config.snapshot_form(
@@ -969,7 +955,7 @@ class BuilderPage(QWidget):
         self.cas_btn.setEnabled(False)
         self.cas_btn.setText("检索中…")
         self.cas_btn.setIcon(icon("search", Color.tertiary, 16, 1.8))
-        self._cas_worker = CasWorker(cas)
+        self._cas_worker = CasWorker(cas, self.config.cas_api_key)
         self._cas_worker.done.connect(self._on_cas_done)
         self._cas_worker.failed.connect(self._on_cas_failed)
         self._cas_worker.finished.connect(self._on_cas_finished)
@@ -994,7 +980,11 @@ class BuilderPage(QWidget):
     def _apply_compound(self, compound: CompoundInfo) -> None:
         self._compound = compound
         self._molfile = compound.sdf
-        self._molfile_name = f"CID {compound.cid}.sdf" if compound.sdf else ""
+        if compound.sdf:
+            identity = f"CID {compound.cid}" if compound.cid else compound.cas
+            self._molfile_name = f"{identity}.sdf"
+        else:
+            self._molfile_name = ""
         self._structure_source = "CAS 检索"
         if compound.formula:
             self.formula_edit.setText(compound.formula)
@@ -1013,12 +1003,15 @@ class BuilderPage(QWidget):
                 52, 52, Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             ))
+        elif compound.svg and (svg_image := _svg_pixmap(compound.svg, 52)):
+            self.confirmed_image.setPixmap(svg_image)
         elif compound.sdf:
             self.confirmed_image.setPixmap(icon("doc", Color.secondary, 24, 1.6).pixmap(24, 24))
         self.confirmed_badge.setText("CAS 检索")
+        identity = f"CID {compound.cid}" if compound.cid else compound.source
         self.confirmed_meta.setText(
             f"{compound.formula or '未知分子式'} · "
-            f"{compound.atom_count or '?'} 原子 · CID {compound.cid}"
+            f"{compound.atom_count or '?'} 原子 · {identity}"
         )
         self.confirmed_smiles.setText(self._shorten(compound.smiles) or "—")
         self.confirmed_card.show()

@@ -1,4 +1,4 @@
-"""本地配置：DeepSeek 连接信息与生成参数。
+"""本地配置：DeepSeek / CAS 连接信息与生成参数。
 
 默认采用**便携式目录**：配置文件、PubChem 缓存和错误日志都放在
 项目根目录（源码运行）或 exe 所在目录（打包运行）下的 `data/` 中，
@@ -75,6 +75,7 @@ def _migrate_legacy_config(path: Path) -> None:
 @dataclass
 class AppConfig:
     api_key: str = ""
+    cas_api_key: str = ""
     base_url: str = DEFAULT_BASE_URL
     model: str = DEFAULT_MODEL
     reasoning_effort: str = DEFAULT_REASONING_EFFORT
@@ -115,6 +116,9 @@ class AppConfig:
         # 环境变量兜底（配置文件中的显式值优先）
         if not cfg.api_key:
             cfg.api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+        cfg.cas_api_key = str(cfg.cas_api_key or "").strip()
+        if not cfg.cas_api_key:
+            cfg.cas_api_key = os.environ.get("CAS_API_KEY", "").strip()
         if not data.get("base_url") and os.environ.get("DEEPSEEK_BASE_URL"):
             cfg.base_url = os.environ["DEEPSEEK_BASE_URL"].strip()
 

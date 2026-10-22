@@ -93,7 +93,7 @@ class TitleBar(QWidget):
         layout.addLayout(center)
         layout.addStretch(1)
 
-        self.settings = IconButton("chevron-down", "DeepSeek 设置", color=Color.secondary, size=32)
+        self.settings = IconButton("chevron-down", "设置", color=Color.secondary, size=32)
         self.settings.setIcon(icon("atom", Color.secondary, 18, 1.7))
         self.settings.clicked.connect(self.settingsClicked)
         layout.addWidget(self.settings, 0, Qt.AlignmentFlag.AlignVCenter)

@@ -35,6 +35,7 @@ def test_config_roundtrip_in_portable_dir(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("MK_MOLE_DATA_DIR", str(tmp_path))
     cfg = AppConfig(
         api_key="sk-test-portable",
+        cas_api_key="cas-test-portable",
         model="deepseek-flash",
         reasoning_effort="high",
         auto_relax=False,
@@ -47,6 +48,7 @@ def test_config_roundtrip_in_portable_dir(monkeypatch, tmp_path) -> None:
 
     loaded = AppConfig.load()
     assert loaded.api_key == "sk-test-portable"
+    assert loaded.cas_api_key == "cas-test-portable"
     assert loaded.model == "deepseek-flash"
     assert loaded.reasoning_effort == "high"
     assert loaded.max_tokens == 65536
@@ -54,3 +56,10 @@ def test_config_roundtrip_in_portable_dir(monkeypatch, tmp_path) -> None:
     assert loaded.chgnet_max_steps == 500
     assert loaded.chgnet_fmax == 0.02
     assert loaded.last_formula == "C6H6"
+
+
+def test_cas_api_key_env_fallback(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MK_MOLE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("CAS_API_KEY", "cas-from-env")
+
+    assert AppConfig.load().cas_api_key == "cas-from-env"

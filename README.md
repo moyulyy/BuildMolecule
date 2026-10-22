@@ -24,7 +24,7 @@ DeepSeek 生成 VASP POSCAR，CHGNet 快速弛豫，3Dmol 本地预览，一键�
 ·
 <a href="#-chgnet-弛豫">CHGNet</a>
 
-> **v1.1.0 新增**：仅图片生成 · DeepSeek 图片 → SMILES 识别 · 核对/编辑/确认 · 放大预览；图片入口已前置到表单最上方。
+> **最新更新**：CAS Common Chemistry 官方检索 · 设置中填写 CAS API Key · 修复 CAS 结构图空白与来源标签裁切。
 
 </div>
 
@@ -42,7 +42,7 @@ DeepSeek 生成 VASP POSCAR，CHGNet 快速弛豫，3Dmol 本地预览，一键�
 | ✏️ **Ketcher 结构编辑** | 内置自托管 Ketcher 3.4；确认后自动回填 SMILES、molfile、分子式和原子数，作为 LLM 的精确连接表参考。 |
 | 🧠 **CHGNet 快速弛豫** | 生成后默认自动弛豫（固定晶胞）；独立 `chgnet_env`，自动检测 CUDA / CPU，支持取消，结果可继续导出。 |
 | 🖼️ **多模态 / 仅图片** | 分子式、名称、CAS、SMILES、SDF/MOL/XYZ/PDB 均可选；**仅上传图片也能生成**。让 DeepSeek 先识别为 SMILES/分子式，在界面或 Ketcher 中核对/编辑，确认后再生成；支持图片放大预览。 |
-| 🔎 **CAS 检索** | PubChem 查询 CID、分子式、分子量、IUPAC、别名、SMILES 与二维结构图。 |
+| 🔎 **CAS 检索** | 可选 CAS Common Chemistry 官方 API（需单独申请 Key），未配置或未收录时自动回退 PubChem；查询 CID、分子式、分子量、IUPAC、别名、SMILES 与二维结构图。 |
 | 🎨 **本地 3D 预览** | 3Dmol.js 球棍模型、Jmol 配色、悬停元素标签、六向视角、保存当前视角 PNG。 |
 | 📦 **多格式导出** | POSCAR、CIF、SDF、XYZ、PDB；弛豫后下载的是 CHGNet 优化结构。 |
 | 🍎 **iOS 审美** | 无边框圆角窗口、交通灯、卡片、分段控件、渐变按钮、活动指示器、Toast 与轻量动画。 |
@@ -57,7 +57,7 @@ DeepSeek 生成 VASP POSCAR，CHGNet 快速弛豫，3Dmol 本地预览，一键�
   <img src="docs/preview.png" alt="BuildMolecule 主界面" width="920">
 </p>
 
-| 空状态 / 首次启动 | DeepSeek 设置 |
+| 空状态 / 首次启动 | 设置 |
 | :---: | :---: |
 | <img src="docs/preview-empty.png" width="440" alt="空状态"> | <img src="docs/settings.png" width="440" alt="设置"> |
 
@@ -89,7 +89,7 @@ DeepSeek 生成 VASP POSCAR，CHGNet 快速弛豫，3Dmol 本地预览，一键�
 1. 打开 [**Latest Release**](https://github.com/moyulyy/BuildMolecule/releases/latest)。
 2. 下载并解压 `BuildMolecule-portable-win64-v*.zip`。
 3. 双击 `MK-MOLE.exe`（无控制台窗口）。
-4. 点击右上角原子图标 → 填写 DeepSeek API Key。
+4. 点击右上角原子图标 → 填写 DeepSeek API Key；CAS 检索默认使用 PubChem，如需 CAS 官方数据可再填 CAS Key（见下文）。
 5. 可选：运行 `install_chgnet.bat` 启用 CHGNet 弛豫（会自动检测 GPU/CUDA）。
 
 > Release 中的便携包是 **GUI 本体**；CHGNet/PyTorch 环境体积大且与显卡/CUDA 相关，不随包上传。  
@@ -118,21 +118,22 @@ macOS / Linux：`./run.sh`。
 
 - Python **3.10+**（已在 Windows + Python 3.14.7 + PySide6 6.12 验证）
 - PySide6 的 QtWebEngine（`pip install -r requirements.txt` 已包含）
-- 网络访问 `api.deepseek.com` 与 `pubchem.ncbi.nlm.nih.gov`
+- 网络访问 `api.deepseek.com`、`pubchem.ncbi.nlm.nih.gov`；填写 CAS Key 后还会访问 `commonchemistry.cas.org`
 
 ---
 
-## 🔑 配置 DeepSeek
+## 🔑 配置 API Key
 
-打开 **原子图标 → DeepSeek 设置**：
+打开 **原子图标 → 设置**：
 
 | 配置 | 说明 |
 |---|---|
-| API Key | 在 [platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) 获取 |
+| API Key | DeepSeek 生成结构用；在 [platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) 获取 |
 | API 地址 | 默认 `https://api.deepseek.com/v1` |
 | 模型 | `deepseek-flash`（默认，快）/ `deepseek-v4-pro`（更强） |
 | 思考强度 | `none` / `low` / **`high`（默认）** / `max` |
 | 测试连接 | 调用 `/models` 验证 Key、网络与模型名 |
+| CAS API Key（可选） | CAS Common Chemistry 官方检索用；在 [CAS 申请页](https://www.cas.org/services/commonchemistry-api) 提交表单后由邮件获取。留空则使用 PubChem |
 
 也可用环境变量兜底：
 
@@ -141,7 +142,22 @@ DEEPSEEK_API_KEY=sk-...
 DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
 DEEPSEEK_MODEL=deepseek-flash
 DEEPSEEK_REASONING_EFFORT=high
+CAS_API_KEY=...   # 可选，CAS Common Chemistry 的 Key
 ```
+
+### CAS Key 去哪里获取？
+
+CAS 检索**不填 Key 也能用**：默认走 PubChem，免费且无需注册。只有希望优先使用 CAS 官方数据时才需要申请 CAS Key。
+
+1. 打开 **[CAS Common Chemistry API 申请页](https://www.cas.org/services/commonchemistry-api)**。
+2. 填写页面中的表单（姓名、邮箱、机构、用途等）并提交，等待 CAS 审核。
+3. 审核通过后，CAS 会将 **API Key 发送到你填写的邮箱**（若没收到，请检查垃圾邮件或被拦截的邮件）。
+4. 回到应用：**原子图标 → 设置 → CAS API Key**，粘贴 Key 后点 **保存**。
+5. 之后在首页填写 CAS 号并点 **检索**：优先查询 CAS Common Chemistry；该库未收录或服务暂不可用时自动回退 PubChem；若 Key 无效会提示重新填写。
+
+> CAS Common Chemistry 只收录约 50 万种常见/受关注物质，并非完整 CAS REGISTRY；查不到时回退 PubChem 是正常行为。<br>
+> **CAS Key 与 DeepSeek Key 是两套不同的密钥**，不要互相混填；CAS Key 只在访问 `commonchemistry.cas.org` 时通过 `X-API-KEY` 请求头发送。<br>
+> 应用使用 CAS 官方 `/direct-api` 接口（并附带 `x-origin` 请求头），而不是网页前端使用的 `/api` 接口。
 
 配置默认保存在：
 
@@ -151,7 +167,7 @@ DEEPSEEK_REASONING_EFFORT=high
 自定义：        MK_MOLE_DATA_DIR 指定的目录
 ```
 
-> ⚠️ API Key 以明文保存在本机 `data/config.json`；请勿提交或外发该目录。`data/` 已在 `.gitignore` 中。
+> ⚠️ DeepSeek API Key 与 CAS API Key 均以明文保存在本机 `data/config.json`；请勿提交或外发该目录。`data/` 已在 `.gitignore` 中。
 
 ---
 
@@ -161,7 +177,7 @@ DEEPSEEK_REASONING_EFFORT=high
 2. 点击 **识别结构式**：DeepSeek 解析图片，返回 SMILES、分子式、名称与置信度。
 3. **核对 / 编辑**：直接修改识别出的 SMILES，或点「在 Ketcher 中编辑」；确认后点 **使用此结构**。
 4. **分子式（可选）**：`C6H6`、`H2O`、`CH3OH`，支持 `C₆H₆` 下标；已有图片/SMILES/结构文件时可留空。
-5. 可选填中文名、英文名、CAS 号、补充说明；CAS 检索可确认 PubChem 二维结构与 SMILES。
+5. 可选填中文名、英文名、CAS 号、补充说明；CAS 检索可确认 CAS Common Chemistry / PubChem 的二维结构与 SMILES。
 6. **结构编辑**：也可直接用 Ketcher 绘制/修改，确认后回填 SMILES + molfile。
 7. **结构文件**：SDF / MOL / XYZ / PDB；与图片/SMILES 同时存在时，连接表优先级更高。
 8. **生成后 CHGNet 弛豫** 默认开启，可关闭。
@@ -287,11 +303,11 @@ BuildMolecule/
 │   ├── config.py               # 便携 data/ 配置与旧配置迁移
 │   ├── theme.py                # iOS 配色、字体、全局 QSS
 │   ├── assets/                 # 3Dmol、viewer、图标、Ketcher
-│   ├── services/               # DeepSeek、POSCAR、PubChem、图片、CHGNet
+│   ├── services/               # DeepSeek、CAS/PubChem、POSCAR、图片、CHGNet
 │   ├── tools/                  # 独立 CHGNet probe / runner
 │   ├── views/                  # 主页面、弹层、Ketcher 编辑器
 │   └── widgets/                # 无边框窗口、自绘控件、3D 查看器
-├── tests/                      # 25 项离线测试
+├── tests/                      # 36 项离线测试
 ├── docs/                       # README 截图
 ├── data/                       # 运行时配置/缓存（gitignored）
 └── dist/                       # 便携构建输出（gitignored）
@@ -303,11 +319,11 @@ BuildMolecule/
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest tests/ -q          # 25 passed
+python -m pytest tests/ -q          # 36 passed
 python -m pyflakes mk_mole tests main.py main.pyw
 ```
 
-覆盖：POSCAR 提取/居中/导出、组成告警、DeepSeek mock SSE/图片消息/提示词、图片识别 JSON、仅图片生成、便携配置、图片编码、molfile 摘要、CHGNet 环境候选、关闭按钮事件等。
+覆盖：POSCAR 提取/居中/导出、组成告警、DeepSeek mock SSE/图片消息/提示词、图片识别 JSON、仅图片生成、便携配置、图片编码、molfile 摘要、CHGNet 环境候选、关闭按钮事件、CAS 官方检索/回退、CAS SVG 渲染兼容、设置页 CAS Key 等。
 
 ---
 
@@ -317,7 +333,7 @@ python -m pyflakes mk_mole tests main.py main.pyw
 - **CHGNet 适用性**：主要面向晶体/周期性体系；孤立分子结果仅作预弛豫参考。
 - **LLM 可能出错**：DeepSeek 仍可能生成不合理价键或原子数；界面会提示组成不一致，请人工核对。
 - **图片识别不确定性**：手绘/截图可能误读元素标签。
-- **PubChem 匹配可能歧义**：同分异构体、盐、溶剂合物请核对。
+- **CAS / PubChem 匹配可能歧义**：同分异构体、盐、溶剂合物请核对。
 - **大体系**：默认 65536 输出预算；原子数很多时可能被截断，可换 `deepseek-v4-pro` 或拆分。
 - **CHGNet 环境较大**：CUDA PyTorch 安装包数 GB；Release 不内置 CHGNet 环境，按需安装。
 - **未签名**：Windows 首次运行可能出现 SmartScreen 提示。
@@ -326,8 +342,8 @@ python -m pyflakes mk_mole tests main.py main.pyw
 
 ## 🔒 安全与隐私
 
-- DeepSeek/PubChem 请求只从本机发出；CHGNet 完全本地运行。
-- API Key 明文保存在 `data/config.json`，请勿提交、打包或共享该目录。
+- DeepSeek / PubChem / CAS Common Chemistry 请求只从本机发出；CHGNet 完全本地运行。
+- API Key（DeepSeek 与 CAS）明文保存在 `data/config.json`，请勿提交、打包或共享该目录。
 - 应用首次启动会将旧版 `%APPDATA%\MK-MOLE\config.json` 迁移到便携 `data/`（不删除旧文件）。
 - 便携版数据目录包含密钥时，请勿外发整个文件夹。
 
@@ -340,6 +356,7 @@ python -m pyflakes mk_mole tests main.py main.pyw
 - [**CHGNet**](https://github.com/CederGroupHub/chgnet) — 晶体图神经网络势函数。
 - [**DeepSeek**](https://platform.deepseek.com/) — 结构生成 LLM。
 - [**PubChem PUG REST**](https://pubchem.ncbi.nlm.nih.gov/docs/pug-rest) — CAS/化合物信息。
+- [**CAS Common Chemistry**](https://www.cas.org/services/commonchemistry-api) — 可选的 CAS 官方化合物检索。
 - [**Qt for Python (PySide6)**](https://doc.qt.io/qtforpython-6/) — 桌面框架。
 - 界面与交互灵感来自 Web_Probe 的「构建分子」页面。
 

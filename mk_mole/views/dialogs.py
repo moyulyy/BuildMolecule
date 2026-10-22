@@ -1,4 +1,4 @@
-"""iOS 风格弹层：DeepSeek 设置、CAS 检索结果、结构下载。"""
+"""iOS 风格弹层：模型 / CAS 设置、CAS 检索结果、结构下载。"""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -34,6 +35,7 @@ from ..config import (
     REASONING_EFFORT_CHOICES,
     AppConfig,
 )
+from ..services.cas import CAS_KEY_URL
 from ..services.deepseek import DeepSeekError, test_connection
 from ..services.poscar import StructureData
 from ..services.pubchem import CompoundInfo
@@ -49,7 +51,7 @@ from ..widgets.controls import (
     hline,
     make_label,
 )
-from ..widgets.icons import icon
+from ..widgets.icons import icon, svg_pixmap
 
 
 class OverlayDialog(QDialog):
@@ -195,17 +197,36 @@ class SettingsSheet(OverlayDialog):
     test_finished = Signal(str, str)
 
     def __init__(self, config: AppConfig, parent: QWidget):
-        super().__init__(parent, width=620)
+        super().__init__(parent, width=780)
         self._config = config
         self._test_thread: threading.Thread | None = None
         self._show_key = False
         self.test_finished.connect(self._on_test_finished)
 
-        self.body.addLayout(self.header(
-            "DeepSeek 设置",
-            "构建分子的结构由 DeepSeek 生成。密钥只保存在本机，不会上传到其他服务。",
+        # 设置项较多：中间表单放进滚动区，窗口较矮时也不遮挡底部按钮。
+        outer = self.body
+        self._form_scroll = QScrollArea()
+        self._form_scroll.setWidgetResizable(True)
+        self._form_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._form_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._form_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        form = QWidget()
+        form.setStyleSheet("background: transparent;")
+        form_layout = QVBoxLayout(form)
+        form_layout.setContentsMargins(0, 0, 0, 0)
+        form_layout.setSpacing(14)
+        self._form_scroll.setWidget(form)
+        self._form_scroll.setFixedHeight(
+            min(max(260, parent.height() - 270), 720) if parent else 480
+        )
+        self.body = form_layout
+
+        outer.addLayout(self.header(
+            "设置",
+            "DeepSeek 用于生成结构；CAS Key 仅用于可选的 CAS 官方检索。密钥只保存在本机。",
         ))
-        self.body.addWidget(hline())
+        outer.addWidget(hline())
+        outer.addWidget(self._form_scroll, 1)
 
         # API Key
         key_label_row = QHBoxLayout()
@@ -289,6 +310,41 @@ class SettingsSheet(OverlayDialog):
         test_row.addWidget(self.test_label, 1)
         self.body.addLayout(test_row)
 
+        # CAS Common Chemistry（可选）
+        self.body.addWidget(hline())
+        cas_label_row = QHBoxLayout()
+        cas_label_row.setSpacing(8)
+        cas_label_row.addWidget(make_label("CAS API Key（可选）", object_name="FieldLabel"))
+        cas_label_row.addStretch(1)
+        get_cas_key = PillButton("申请 CAS Key", variant="ghost", height=26)
+        get_cas_key.setFont(app_font(11, app_font(11).weight()))
+        get_cas_key.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(CAS_KEY_URL)))
+        cas_label_row.addWidget(get_cas_key)
+        self.body.addLayout(cas_label_row)
+
+        cas_key_row = QHBoxLayout()
+        cas_key_row.setSpacing(8)
+        self.cas_key_edit = IOSLineEdit("留空则继续使用 PubChem（无需 Key）")
+        self.cas_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.cas_key_edit.setText(config.cas_api_key)
+        self.cas_key_edit.setFont(app_font(13, app_font(13).weight(), mono=True))
+        cas_key_row.addWidget(self.cas_key_edit, 1)
+        self.cas_eye_btn = IconButton("eye", "显示 / 隐藏", color=Color.secondary, size=38)
+        self.cas_eye_btn.clicked.connect(self._toggle_cas_key)
+        cas_key_row.addWidget(self.cas_eye_btn)
+        self.body.addLayout(cas_key_row)
+
+        cas_hint = make_label(
+            "CAS Common Chemistry 的 Key 需要单独申请（与 DeepSeek Key 不同）。"
+            f"打开 {CAS_KEY_URL} 填写申请表单，CAS 审核后会把 Key 发送到你的邮箱；"
+            "收到后粘贴到这里并保存。填写后 CAS 检索优先使用 CAS 官方数据，"
+            "未收录或服务不可用时自动回退 PubChem。",
+            color=Color.tertiary,
+        )
+        cas_hint.setFont(app_font(11))
+        cas_hint.setWordWrap(True)
+        self.body.addWidget(cas_hint)
+
         note = card(inset=True)
         note_layout = QVBoxLayout(note)
         note_layout.setContentsMargins(14, 11, 14, 11)
@@ -314,7 +370,15 @@ class SettingsSheet(OverlayDialog):
         save.clicked.connect(self._save)
         footer.addWidget(cancel)
         footer.addWidget(save)
-        self.body.addLayout(footer)
+        outer.addLayout(footer)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        parent = self.parentWidget()
+        if parent:
+            self._form_scroll.setFixedHeight(
+                min(max(260, parent.height() - 270), 720)
+            )
+        super().showEvent(event)
 
     def _toggle_key(self) -> None:
         self._show_key = not self._show_key
@@ -322,6 +386,15 @@ class SettingsSheet(OverlayDialog):
             QLineEdit.EchoMode.Normal if self._show_key else QLineEdit.EchoMode.Password
         )
         self.eye_btn.setIcon(icon("eye", Color.blue if self._show_key else Color.secondary, 18))
+
+    def _toggle_cas_key(self) -> None:
+        visible = self.cas_key_edit.echoMode() == QLineEdit.EchoMode.Normal
+        self.cas_key_edit.setEchoMode(
+            QLineEdit.EchoMode.Password if visible else QLineEdit.EchoMode.Normal
+        )
+        self.cas_eye_btn.setIcon(
+            icon("eye", Color.secondary if visible else Color.blue, 18)
+        )
 
     def _current_model(self) -> str:
         index = max(0, min(self.model_seg.current_index(), len(MODEL_CHOICES) - 1))
@@ -338,6 +411,7 @@ class SettingsSheet(OverlayDialog):
         return replace(
             self._config,
             api_key=self.key_edit.text().strip(),
+            cas_api_key=self.cas_key_edit.text().strip(),
             base_url=base,
             model=self._current_model(),
             reasoning_effort=self._current_effort(),
@@ -463,6 +537,8 @@ class CASSheet(OverlayDialog):
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             ))
+        elif compound.svg and (svg_image := svg_pixmap(compound.svg, 196)):
+            image.setPixmap(svg_image)
         else:
             image.setText("无二维结构图")
             image.setStyleSheet(f"color: {Color.tertiary};")
@@ -480,6 +556,12 @@ class CASSheet(OverlayDialog):
         chips.addWidget(StatusPill(f"CAS {compound.cas}", "running"))
         if compound.cid:
             chips.addWidget(StatusPill(f"CID {compound.cid}", "idle"))
+        else:
+            # 英文来源名较长，在结果卡片里用短标签，避免胶囊文字被裁切。
+            source_label = "CAS 官方" if compound.source == "CAS Common Chemistry" else compound.source
+            source_pill = StatusPill(source_label, "idle")
+            source_pill.setToolTip(compound.source)
+            chips.addWidget(source_pill)
         chips.addStretch(1)
         meta.addLayout(chips)
 

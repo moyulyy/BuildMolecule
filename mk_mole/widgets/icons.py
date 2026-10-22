@@ -4,15 +4,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QByteArray, QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import (
     QColor,
     QIcon,
+    QImage,
     QPainter,
     QPainterPath,
     QPen,
     QPixmap,
 )
+from PySide6.QtSvg import QSvgRenderer
 
 from ..theme import Color
 
@@ -209,6 +211,47 @@ def _draw(p: QPainter, name: str, s: float, color: str, width: float) -> None:
 
 def icon(name: str, color: str = Color.label, size: int = 18, width: float = 1.8) -> QIcon:
     return QIcon(_pixmap(name, color, size, width))
+
+
+def svg_pixmap(
+    svg: str,
+    size: int,
+    *,
+    background: Qt.GlobalColor | QColor = Qt.GlobalColor.white,
+    scale: int = 2,
+) -> QPixmap | None:
+    """把 SVG 渲染成带背景的正方形高分屏缩略图（保持宽高比）。"""
+    if not (svg or "").strip():
+        return None
+    try:
+        renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
+        if not renderer.isValid():
+            return None
+        pixels = size * scale
+        image = QImage(pixels, pixels, QImage.Format.Format_ARGB32)
+        image.fill(background)
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        target = QRectF(0, 0, pixels, pixels)
+        default = renderer.defaultSize()
+        if default.isValid() and not default.isEmpty():
+            fitted = default.scaled(
+                QSize(pixels, pixels),
+                Qt.AspectRatioMode.KeepAspectRatio,
+            )
+            target = QRectF(
+                (pixels - fitted.width()) / 2,
+                (pixels - fitted.height()) / 2,
+                fitted.width(),
+                fitted.height(),
+            )
+        renderer.render(painter, target)
+        painter.end()
+        pixmap = QPixmap.fromImage(image)
+        pixmap.setDevicePixelRatio(float(scale))
+        return pixmap
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def app_icon() -> QIcon:

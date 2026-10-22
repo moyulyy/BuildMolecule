@@ -23,8 +23,8 @@ class PubChemError(RuntimeError):
 
 @dataclass
 class CompoundInfo:
-    cid: int
-    cas: str
+    cid: int | None = None
+    cas: str = ""
     formula: str = ""
     molecular_weight: float | None = None
     smiles: str = ""
@@ -34,10 +34,14 @@ class CompoundInfo:
     atom_count: int | None = None
     sdf: str = ""
     png: bytes = b""
+    svg: str = ""
+    source: str = "PubChem"
 
     @property
     def display_name(self) -> str:
-        return self.title or self.iupac_name or self.formula or f"CID {self.cid}"
+        if self.title or self.iupac_name or self.formula:
+            return self.title or self.iupac_name or self.formula
+        return f"CID {self.cid}" if self.cid else f"CAS {self.cas}"
 
 
 CACHE_DAYS = 30

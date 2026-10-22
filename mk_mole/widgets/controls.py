@@ -359,6 +359,11 @@ class StatusPill(QWidget):
         self.setFixedWidth(fm.horizontalAdvance(self._text) + 38)
         self.update()
 
+    def showEvent(self, event) -> None:  # noqa: N802
+        # 构造时全局样式/字体尚未最终生效，按最终字体重新测量，避免文字被裁切。
+        self._resize()
+        super().showEvent(event)
+
     def set_status(self, text: str, kind: str) -> None:
         self._text = text
         self._kind = kind
